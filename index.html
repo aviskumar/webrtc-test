@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebRTC Audio Call with Room ID</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <h1>WebRTC Audio Call with Room ID</h1>
+    <!-- Informational messages -->
+    <p>Requires HTTPS or localhost for microphone access. Ensure the signaling server (`node server.js`) is running.</p>
+
+    <!-- Section for entering Room ID and joining -->
+    <div id="connectControls">
+        <h2>Connect to a Call</h2>
+        <!-- Input for Room ID -->
+        <label for="roomId">Room ID:</label>
+        <input type="text" id="roomId" placeholder="Enter Room ID to create or join">
+        <!-- Button to initiate connection -->
+        <button id="joinButton">Join / Start Call</button>
+        <!-- Displays connection status updates -->
+        <p id="connectionStatus">Status: Initializing...</p>
+        <p>Create a Room ID (e.g., 'audio-chat-123') and share it with the person you want to call.</p>
+    </div>
+
+    <!-- Section shown during an active call -->
+    <div id="callControls" style="display: none;"> <!-- Initially hidden -->
+         <h2>In Call (Room: <span id="currentRoomId"></span>)</h2> <!-- Displays the current room ID -->
+        <div>
+            <h3>Your Audio (Muted)</h3>
+            <!-- Audio element for local microphone input -->
+            <!-- 'muted' prevents feedback loop, 'autoplay'/'playsinline' help start automatically -->
+            <audio id="localAudio" controls muted autoplay playsinline></audio>
+        </div>
+        <div>
+            <h3>Remote Audio</h3>
+            <!-- Audio element for the peer's audio stream -->
+            <audio id="remoteAudio" controls autoplay playsinline></audio>
+        </div>
+        <!-- Button to end the current call -->
+        <button id="endButton">End Call</button>
+    </div>
+
+    <!-- Link to the JavaScript file -->
+    <script src="script.js"></script>
+</body>
+</html>
