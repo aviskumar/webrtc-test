@@ -21,7 +21,7 @@ let currentRoom = null; // Tracks the ID of the room the client is currently in
 
 // --- Configuration ---
 // URL of the WebSocket signaling server (must match the server's address and port)
-const WS_URL = 'ws://localhost:8080';
+const WS_URL = 'ws://webrtc-test-zh1v.onrender.com';
 // Configuration for the RTCPeerConnection, including STUN servers
 // STUN servers are used to discover the client's public IP address and port
 const configuration = {
