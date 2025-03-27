@@ -1,48 +1,97 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>WebRTC Audio Call with Room ID</title>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"> <!-- Added viewport-fit=cover for notch areas -->
+    <title>Connect Call</title>
+
+    <!-- Google Font -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;700&display=swap" rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css" integrity="sha512-xh6O/CkQoPOWDdYTDqeRdPCVd1SpvCA9XXcUnZS2FmJNp1coAFzvtCN9BmamE+4aHK8yyUHUSCcJHgXloTyT2A==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+    <!-- Custom Stylesheet -->
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
-    <h1>WebRTC Audio Call with Room ID</h1>
-    <!-- Informational messages -->
-    <p>Requires HTTPS or localhost for microphone access. Ensure the signaling server (`node server.js`) is running.</p>
 
-    <!-- Section for entering Room ID and joining -->
-    <div id="connectControls">
-        <h2>Connect to a Call</h2>
-        <!-- Input for Room ID -->
-        <label for="roomId">Room ID:</label>
-        <input type="text" id="roomId" placeholder="Enter Room ID to create or join">
-        <!-- Button to initiate connection -->
-        <button id="joinButton">Join / Start Call</button>
-        <!-- Displays connection status updates -->
-        <p id="connectionStatus">Status: Initializing...</p>
-        <p>Create a Room ID (e.g., 'audio-chat-123') and share it with the person you want to call.</p>
+    <div class="app-container">
+
+        <!-- Initial Connection Screen (No changes needed here) -->
+        <section id="connectScreen" class="screen connect-screen active"> <!-- Start active -->
+            <div class="content-wrapper">
+                 <header class="screen-header">
+                    <h1>Connect Call</h1>
+                    <p>Enter a Room ID and choose call type</p>
+                </header>
+                 <div class="form-area">
+                    <div class="input-group">
+                        <i class="fas fa-door-open icon"></i>
+                        <input type="text" id="roomIdInput" placeholder="Enter Room ID">
+                    </div>
+                    <div class="button-group call-type-buttons">
+                        <button id="audioCallButton" class="btn btn-secondary">
+                            <i class="fas fa-phone"></i> Audio Call
+                        </button>
+                        <button id="videoCallButton" class="btn btn-primary">
+                            <i class="fas fa-video"></i> Video Call
+                        </button>
+                    </div>
+                </div>
+                 <div class="status-area">
+                     <p id="connectionStatus">Status: Initializing...</p>
+                     <p class="server-info">Server: <span id="wsUrlDisplay"></span></p>
+                </div>
+            </div>
+        </section>
+
+        <!-- In-Call Screen -->
+        <section id="callScreen" class="screen call-screen"> <!-- Start inactive -->
+             <!-- Remote View Area -->
+             <div class="remote-view-container">
+                 <!-- Video element for remote video -->
+                 <video id="remoteVideo" autoplay playsinline></video>
+
+                 <!-- Overlay for Connecting/Waiting -->
+                 <div id="remoteConnectingOverlay" class="overlay status-overlay">
+                     <i class="fas fa-spinner fa-spin"></i>
+                     <p>Connecting...</p>
+                 </div>
+
+                 <!-- Creative Placeholder for Audio Calls -->
+                 <div id="audioCallUI" class="overlay audio-ui">
+                     <div class="audio-avatar">
+                         <span id="audioAvatarInitials"></span>
+                     </div>
+                     <h2 id="audioRoomId">Room Name</h2>
+                     <p id="audioCallStatus"><i class="fas fa-signal"></i> Connecting audio...</p>
+                 </div>
+             </div>
+
+             <!-- Local Video (PiP) - Hidden during audio calls by CSS -->
+             <div class="local-video-container">
+                 <video id="localVideo" autoplay muted playsinline></video>
+             </div>
+
+             <!-- Top Info Bar - Hidden during audio calls by CSS -->
+             <div class="call-info-bar">
+                 <span class="room-id"><i class="fas fa-users"></i> <span id="currentRoomIdDisplay"></span></span>
+                  <span id="callStatus" class="call-status-text"></span>
+             </div>
+
+             <!-- Call Controls -->
+             <div class="call-controls">
+                 <button id="endButton" class="btn control-btn hangup-btn">
+                     <i class="fas fa-phone-slash"></i>
+                 </button>
+             </div>
+        </section>
+
     </div>
 
-    <!-- Section shown during an active call -->
-    <div id="callControls" style="display: none;"> <!-- Initially hidden -->
-         <h2>In Call (Room: <span id="currentRoomId"></span>)</h2> <!-- Displays the current room ID -->
-        <div>
-            <h3>Your Audio (Muted)</h3>
-            <!-- Audio element for local microphone input -->
-            <!-- 'muted' prevents feedback loop, 'autoplay'/'playsinline' help start automatically -->
-            <audio id="localAudio" controls muted autoplay playsinline></audio>
-        </div>
-        <div>
-            <h3>Remote Audio</h3>
-            <!-- Audio element for the peer's audio stream -->
-            <audio id="remoteAudio" controls autoplay playsinline></audio>
-        </div>
-        <!-- Button to end the current call -->
-        <button id="endButton">End Call</button>
-    </div>
-
-    <!-- Link to the JavaScript file -->
     <script src="script.js"></script>
 </body>
 </html>

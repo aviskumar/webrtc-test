@@ -1,145 +1,216 @@
 // File: script.js
 
-// --- Get references to DOM Elements ---
-const joinButton = document.getElementById('joinButton');
-const roomIdInput = document.getElementById('roomId');
+// --- DOM Elements ---
+const connectScreen = document.getElementById('connectScreen');
+const callScreen = document.getElementById('callScreen');
+const roomIdInput = document.getElementById('roomIdInput');
+const audioCallButton = document.getElementById('audioCallButton');
+const videoCallButton = document.getElementById('videoCallButton');
 const connectionStatus = document.getElementById('connectionStatus');
-const connectControls = document.getElementById('connectControls');
-const callControls = document.getElementById('callControls');
-const currentRoomIdSpan = document.getElementById('currentRoomId');
-const endButton = document.getElementById('endButton');
-const localAudio = document.getElementById('localAudio');
-const remoteAudio = document.getElementById('remoteAudio');
+const wsUrlDisplay = document.getElementById('wsUrlDisplay');
 
-// --- WebRTC and Signaling Variables ---
-let localStream;      // Holds the user's local audio stream
-let remoteStream;     // Holds the peer's remote audio stream
-let peerConnection;   // The RTCPeerConnection object
-let socket;           // The WebSocket connection to the signaling server
-let isInitiator = false; // Tracks if this client is the one initiating the call
-let currentRoom = null; // Tracks the ID of the room the client is currently in
+// Call Screen Elements
+const localVideo = document.getElementById('localVideo');
+const remoteVideo = document.getElementById('remoteVideo');
+const remoteConnectingOverlay = document.getElementById('remoteConnectingOverlay');
+const audioCallUI = document.getElementById('audioCallUI');
+const audioAvatarInitials = document.getElementById('audioAvatarInitials');
+const audioRoomId = document.getElementById('audioRoomId');
+const audioCallStatus = document.getElementById('audioCallStatus');
+const currentRoomIdDisplay = document.getElementById('currentRoomIdDisplay'); // In video info bar
+const callStatus = document.getElementById('callStatus'); // In video info bar
+const endButton = document.getElementById('endButton');
+
+// --- App State ---
+let localStream;
+let remoteStream;
+let peerConnection;
+let socket;
+let isInitiator = false;
+let currentRoom = null;
+let currentCallType = null; // 'audio' or 'video'
 
 // --- Configuration ---
-// URL of the WebSocket signaling server (must match the server's address and port)
-const WS_URL = 'wss://webrtc-test-zh1v.onrender.com';
-// Configuration for the RTCPeerConnection, including STUN servers
-// STUN servers are used to discover the client's public IP address and port
+// !! IMPORTANT !! Set this for localhost or your deployed server
+const WS_URL = 'wss://webrtc-test-zh1v.onrender.com'; // FOR LOCALHOST
+// const WS_URL = 'wss://your-app-name.onrender.com'; // FOR PRODUCTION
 const configuration = {
     iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' }, // Google's public STUN server
+        { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
-        // In production, you might need TURN servers for clients behind restrictive firewalls
-        // {
-        //   urls: 'turn:your-turn-server.com:3478',
-        //   username: 'user',
-        //   credential: 'password'
-        // }
     ]
 };
 
 // --- Event Listeners ---
-joinButton.onclick = joinRoom;   // Call joinRoom when the join button is clicked
-endButton.onclick = hangup;     // Call hangup when the end button is clicked
+audioCallButton.onclick = () => initiateCall('audio');
+videoCallButton.onclick = () => initiateCall('video');
+endButton.onclick = hangup;
 
-// --- WebSocket Communication Functions ---
+// --- UI State Management ---
+function showScreen(screenId) {
+    document.querySelectorAll('.screen').forEach(screen => {
+        screen.classList.remove('active');
+    });
+    const activeScreen = document.getElementById(screenId);
+    if (activeScreen) {
+        activeScreen.classList.add('active');
+    }
+}
 
-/**
- * Establishes a WebSocket connection to the signaling server.
- * Sets up event handlers for open, message, error, and close events.
- */
+function showOverlay(overlayId, show = true) {
+    const overlay = document.getElementById(overlayId);
+    if (overlay) {
+        overlay.classList.toggle('visible', show);
+    }
+}
+
+function setupCallUI(callType, status = 'Initializing...') {
+    currentCallType = callType;
+    callScreen.dataset.callType = callType; // Set data attribute for CSS styling
+
+    // Update Room ID display
+    currentRoomIdDisplay.textContent = currentRoom || 'N/A';
+
+    // Reset overlays before showing the correct one
+    showOverlay('remoteConnectingOverlay', false);
+    showOverlay('audioCallUI', false);
+
+    if (callType === 'video') {
+        callStatus.textContent = status; // Update status in video info bar
+    } else {
+        // Setup Audio UI
+        audioRoomId.textContent = `Room: ${currentRoom || 'N/A'}`;
+        audioCallStatus.textContent = status;
+        // Generate simple initials from Room ID
+        const initials = currentRoom ? currentRoom.substring(0, 2).toUpperCase() : '??';
+        audioAvatarInitials.textContent = initials;
+        showOverlay('audioCallUI', true); // Show audio UI immediately
+    }
+
+    // Show the call screen itself
+    showScreen('callScreen');
+}
+
+
+// --- WebSocket Communication (Minor changes for status updates) ---
 function connectWebSocket() {
-    // Create a new WebSocket connection
+    wsUrlDisplay.textContent = WS_URL.replace(/^wss?:\/\//, ''); // Show URL without protocol
     socket = new WebSocket(WS_URL);
 
-    // Called when the WebSocket connection is successfully opened
     socket.onopen = () => {
         console.log('WebSocket connected');
-        connectionStatus.textContent = 'Status: Connected to signaling server. Enter Room ID.';
-        joinButton.disabled = false; // Enable the join button
+        connectionStatus.textContent = 'Status: Connected. Enter Room ID.';
+        audioCallButton.disabled = false;
+        videoCallButton.disabled = false;
     };
 
-    // Called when a message is received from the signaling server
     socket.onmessage = (event) => {
         const message = JSON.parse(event.data);
         console.log('Received message:', message);
 
-        // Handle different types of messages from the server
         switch (message.type) {
-            case 'joined': // Confirmation that joining the room was successful
+            case 'joined':
                 currentRoom = message.roomId;
-                isInitiator = message.isInitiator; // Server tells us if we are the first (initiator)
-                console.log(`Joined room ${currentRoom}. I am ${isInitiator ? 'initiator' : 'joiner'}.`);
-                connectionStatus.textContent = `Status: Joined room ${currentRoom}. ${isInitiator ? 'Waiting for peer...' : 'Ready.'}`;
-                currentRoomIdSpan.textContent = currentRoom; // Display room ID in UI
-                connectControls.style.display = 'none'; // Hide initial connection form
-                callControls.style.display = 'block';  // Show in-call controls
-                // Now that we're in a room, get microphone access
-                startMedia();
+                isInitiator = message.isInitiator;
+                currentCallType = message.callType; // Server dictates
+                console.log(`Joined room ${currentRoom} (${currentCallType}). Initiator: ${isInitiator}.`);
+
+                const initialStatus = isInitiator ? 'Waiting for peer...' : 'Joining call...';
+                setupCallUI(currentCallType, initialStatus); // Setup UI based on received type
+                startMedia(); // Get media based on currentCallType
                 break;
 
-            case 'peer_joined': // Notification for the initiator that the second peer has joined
+            case 'peer_joined':
                 console.log('Peer joined the room.');
-                connectionStatus.textContent = `Status: Peer joined room ${currentRoom}. Starting P2P connection...`;
-                // Initiator: Now that the peer is present, create the PeerConnection and the offer
+                currentCallType = message.callType; // Ensure type consistency
+                const peerJoinedStatus = 'Peer joined. Initializing connection...';
+                if (currentCallType === 'video') callStatus.textContent = peerJoinedStatus;
+                else audioCallStatus.textContent = peerJoinedStatus;
+                showOverlay('remoteConnectingOverlay', true); // Show connecting overlay
                 createPeerConnectionAndOffer();
                 break;
 
-            case 'offer': // Received a WebRTC offer from the peer (for the joiner)
+            case 'offer':
                 if (!isInitiator) {
                     console.log('Received offer.');
-                    connectionStatus.textContent = `Status: Received offer from peer. Creating answer...`;
-                    // Joiner: Handle the received offer and create an answer
-                    handleOffer(message.offer);
+                    const incomingStatus = 'Incoming call... Preparing...';
+                     if (currentCallType === 'video') callStatus.textContent = incomingStatus;
+                     else audioCallStatus.textContent = incomingStatus;
+                    // Ensure media is ready *before* handling offer
+                    startMedia().then(() => {
+                        handleOffer(message.offer);
+                    }).catch(err => {
+                         console.error("Media required before handling offer:", err);
+                         const errorStatus = `Error: Media needed.`;
+                         if (currentCallType === 'video') callStatus.textContent = errorStatus;
+                         else audioCallStatus.textContent = errorStatus;
+                    });
                 }
                 break;
 
-            case 'answer': // Received a WebRTC answer from the peer (for the initiator)
+            case 'answer':
                 if (isInitiator) {
                     console.log('Received answer.');
-                    connectionStatus.textContent = `Status: Received answer from peer. Connection should establish.`;
-                    // Initiator: Handle the received answer
+                    const connectingStatus = `Connecting...`;
+                     if (currentCallType === 'video') callStatus.textContent = connectingStatus;
+                     else audioCallStatus.textContent = connectingStatus; // Also show on audio UI
                     handleAnswer(message.answer);
                 }
                 break;
 
-            case 'candidate': // Received an ICE candidate from the peer
-                if (peerConnection) {
-                    console.log('Received ICE candidate.');
-                    // Add the received ICE candidate to the PeerConnection
+            case 'candidate':
+                 if (peerConnection) {
                     peerConnection.addIceCandidate(new RTCIceCandidate(message.candidate))
                         .catch(e => console.error('Error adding received ICE candidate', e));
-                } else {
-                    console.warn("Received ICE candidate, but PeerConnection is not initialized yet.");
-                    // Ideally, queue candidates if PC isn't ready, but this simple example might lose early ones.
                 }
                 break;
 
-            case 'peer_hangup': // Notification that the peer explicitly ended the call
+            case 'peer_hangup':
                  console.log('Peer hung up.');
-                 connectionStatus.textContent = `Status: Peer left the call.`;
-                 alert('The other user has left the call.');
-                 resetCall(); // Clean up the call state
+                 alert('The other user has ended the call.');
+                 resetCall();
                  break;
 
-            case 'peer_left': // Notification that the peer disconnected unexpectedly
-                 console.log('Peer left the room (disconnected).');
-                 connectionStatus.textContent = `Status: Peer disconnected. Waiting...`;
+            case 'peer_left':
+                 console.log('Peer left the room.');
                  alert('The other user disconnected.');
-                 // Reset the call state, potentially allowing a new peer to join later
-                 resetCall(false); // Reset WebRTC but keep WebSocket open for now
+                 resetCall(false); // Keep socket open
+                 // Update status appropriately
+                 if (currentCallType === 'video') callStatus.textContent = `Peer disconnected. Waiting...`;
+                 else audioCallStatus.textContent = `Peer disconnected.`;
+                 // Reset remote media display but keep UI appropriate for call type
+                 remoteVideo.srcObject = null;
+                 if (remoteStream) { remoteStream.getTracks().forEach(t => t.stop()); }
+                 remoteStream = null;
+                 showOverlay('remoteConnectingOverlay', false); // Hide spinner
+                 // Re-show placeholder if it was an audio call
+                 if(currentCallType === 'audio') {
+                     showOverlay('audioCallUI', true);
+                     audioCallStatus.textContent = `Peer disconnected.`;
+                 } else {
+                     // Optionally show spinner again for video? Or a different message?
+                     showOverlay('remoteConnectingOverlay', true);
+                     remoteConnectingOverlay.querySelector('p').textContent = "Peer Disconnected. Waiting...";
+                 }
                  break;
 
-            case 'room_full': // Server indication that the room is already full
+            // Other cases (room_full, error) - Adjust status messages if needed
+             case 'room_full':
                 console.error(`Room ${message.roomId} is full.`);
                 connectionStatus.textContent = `Status: Error - Room ${message.roomId} is full.`;
                 alert(`Error: Could not join room ${message.roomId} because it is full.`);
-                socket.close(); // Close the connection as joining failed
+                audioCallButton.disabled = false;
+                videoCallButton.disabled = false;
+                roomIdInput.disabled = false;
+                if (socket && socket.readyState === WebSocket.OPEN) socket.close();
                 break;
 
-            case 'error': // Generic error message from the server
+            case 'error':
                  console.error('Server error:', message.message);
                  connectionStatus.textContent = `Status: Error - ${message.message}`;
                  alert(`Server error: ${message.message}`);
+                 // Maybe reset UI?
+                 resetState();
                  break;
 
             default:
@@ -147,417 +218,330 @@ function connectWebSocket() {
         }
     };
 
-    // Called when a WebSocket error occurs
-    socket.onerror = (error) => {
+     socket.onerror = (error) => {
         console.error('WebSocket error:', error);
-        connectionStatus.textContent = 'Status: WebSocket error. Check console. Is the server running?';
-        alert('WebSocket connection error. Please ensure the signaling server is running and accessible.');
-        resetState(); // Reset the application state
+        connectionStatus.textContent = 'Status: Connection Error. Check Server/URL.';
+        alert('WebSocket connection error. Check server URL and ensure it is running.');
+        resetState(); // Reset fully on connection error
     };
 
-    // Called when the WebSocket connection is closed
     socket.onclose = () => {
         console.log('WebSocket disconnected');
-        // Avoid overwriting specific error messages
-        if (!connectionStatus.textContent.includes('Error')) {
-             connectionStatus.textContent = 'Status: Disconnected from signaling server.';
+        if (!connectionStatus.textContent.includes('Error') && !document.getElementById('callScreen').classList.contains('active')) {
+            // Only update if not in call or error state
+            connectionStatus.textContent = 'Status: Disconnected from server.';
         }
-        // Reset the state if the disconnection wasn't part of a normal hangup
-        // resetState(); // Decide if a full reset is always needed on close
-        joinButton.disabled = true; // Disable join until reconnected (if implementing reconnect logic)
+        audioCallButton.disabled = true;
+        videoCallButton.disabled = true;
     };
 }
 
-/**
- * Sends a JSON message through the WebSocket connection.
- * @param {object} message - The message object to send.
- */
 function sendMessage(message) {
      if (socket && socket.readyState === WebSocket.OPEN) {
         console.log('Sending message:', message);
         socket.send(JSON.stringify(message));
      } else {
          console.error("Cannot send message: WebSocket is not open.");
-         connectionStatus.textContent = 'Status: Error - Not connected to signaling server.';
-         // Consider attempting to reconnect or informing the user more clearly.
+         // Update status on appropriate screen
+         const errorMsg = 'Error: Connection Lost';
+         if (callScreen.classList.contains('active')) {
+             if (currentCallType === 'video') callStatus.textContent = errorMsg;
+             else audioCallStatus.textContent = errorMsg;
+         } else {
+             connectionStatus.textContent = `Status: ${errorMsg}`;
+         }
+         // Consider attempting reconnect or providing clearer user feedback
      }
 }
 
-// --- Room Joining Logic ---
-
-/**
- * Called when the 'Join / Start Call' button is clicked.
- * Validates the Room ID and sends a 'create_or_join' message to the server.
- */
-function joinRoom() {
+// --- Call Initiation ---
+function initiateCall(callType) {
     const roomId = roomIdInput.value.trim();
-    if (!roomId) {
-        alert('Please enter a Room ID.');
-        return;
-    }
-    // Ensure WebSocket is connected before attempting to join
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-         alert('Not connected to signaling server. Please wait or refresh.');
-         return;
-    }
+    if (!roomId) { alert('Please enter a Room ID.'); return; }
+    if (!socket || socket.readyState !== WebSocket.OPEN) { alert('Not connected to signaling server.'); return; }
 
-    console.log(`Attempting to join/create room: ${roomId}`);
-    connectionStatus.textContent = `Status: Joining room ${roomId}...`;
-    joinButton.disabled = true; // Disable button while attempting
+    console.log(`Initiating ${callType} call in room: ${roomId}`);
+    connectionStatus.textContent = `Status: Joining ${roomId}...`;
+    audioCallButton.disabled = true;
+    videoCallButton.disabled = true;
+    roomIdInput.disabled = true;
 
-    // Send the request to the signaling server
-    sendMessage({
-        type: 'create_or_join',
-        roomId: roomId
+    sendMessage({ type: 'create_or_join', roomId: roomId, callType: callType });
+}
+
+// --- WebRTC Core ---
+
+async function startMedia() {
+    if (localStream) {
+        console.log("Local stream already active.");
+        return Promise.resolve();
+    }
+    console.log(`Requesting media for ${currentCallType} call...`);
+    const statusMsg = 'Requesting permissions...';
+    if (currentCallType === 'video') callStatus.textContent = statusMsg;
+    else audioCallStatus.textContent = statusMsg;
+
+    const constraints = (currentCallType === 'video')
+        ? { audio: true, video: true }
+        : { audio: true, video: false };
+
+    try {
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        console.log('Got local stream:', localStream);
+        const readyMsg = 'Local media ready.';
+        if (currentCallType === 'video') {
+            callStatus.textContent = readyMsg;
+            if (localStream.getVideoTracks().length > 0) {
+                localVideo.srcObject = localStream; // Assign to video element
+            } else {
+                 console.warn("Requested video, but stream has no video track.");
+                 localVideo.srcObject = null; // Ensure it's cleared
+            }
+        } else {
+            audioCallStatus.textContent = readyMsg;
+            localVideo.srcObject = null; // Ensure local video is hidden for audio calls
+        }
+
+        if (peerConnection) { addLocalTracksToPeerConnection(); }
+        return Promise.resolve();
+
+    } catch (e) {
+        console.error('Error getting user media:', e);
+        alert(`Media access error: ${e.message}. Check permissions.`);
+        const errorMsg = `Error: Media access failed.`;
+        if (currentCallType === 'video') callStatus.textContent = errorMsg;
+        else audioCallStatus.textContent = errorMsg;
+        resetCall();
+        return Promise.reject(e);
+    }
+}
+
+function addLocalTracksToPeerConnection() {
+    if (!localStream || !peerConnection) return;
+    console.log('Adding local tracks...');
+    localStream.getTracks().forEach(track => {
+        if (!peerConnection.getSenders().find(s => s.track === track)) {
+            console.log(`Adding local ${track.kind} track`);
+            peerConnection.addTrack(track, localStream);
+        }
     });
 }
 
-// --- WebRTC Core Functions ---
-
-/**
- * Requests access to the user's microphone using getUserMedia.
- * On success, sets the local audio stream and adds tracks to the PeerConnection if ready.
- */
-async function startMedia() {
-    console.log('Requesting local media (microphone)...');
-     try {
-        // Request audio-only stream
-        localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-        localAudio.srcObject = localStream; // Display local audio (muted)
-        console.log('Got local stream:', localStream);
-
-        // If the PeerConnection exists (e.g., joiner handling offer), add tracks now.
-        if (peerConnection) {
-            addLocalTracksToPeerConnection();
-        }
-     } catch (e) {
-        console.error('Error getting user media:', e);
-        alert('Could not access microphone. Please check browser permissions.');
-        // Handle the error, maybe reset the call state or inform the user
-        resetCall();
-     }
-}
-
-/**
- * Adds all audio tracks from the localStream to the PeerConnection.
- */
-function addLocalTracksToPeerConnection() {
-     if (localStream && peerConnection) {
-         console.log('Adding local tracks to PeerConnection...');
-         localStream.getTracks().forEach(track => {
-            // Check if the track is already added before adding
-            const senders = peerConnection.getSenders();
-            if (!senders.find(sender => sender.track === track)) {
-                console.log('Adding local track:', track);
-                peerConnection.addTrack(track, localStream);
-            } else {
-                console.log('Track already added:', track);
-            }
-        });
-     } else if (!localStream) {
-         console.warn("Cannot add local tracks: localStream is not available yet.");
-     } else if (!peerConnection) {
-         console.warn("Cannot add local tracks: peerConnection is not available yet.");
-     }
-}
-
-/**
- * Creates and configures the RTCPeerConnection object.
- * Sets up event listeners for ICE candidates, track additions, and connection state changes.
- */
 function setupPeerConnection() {
-     // Close existing connection if any
-     if (peerConnection) {
-        console.warn("PeerConnection already exists. Closing previous one.");
-        peerConnection.close();
-     }
-
+    if (peerConnection) peerConnection.close();
     console.log('Creating PeerConnection...');
     peerConnection = new RTCPeerConnection(configuration);
-    console.log('PeerConnection created with configuration:', configuration);
 
-    // Event Listener: Called when the browser generates an ICE candidate.
-    // Sends the candidate to the peer via the signaling server.
+    // Show initial connecting state
+    showOverlay('remoteConnectingOverlay', true);
+    if (currentCallType === 'audio') {
+        // Also ensure audio UI is visible and shows connecting status initially
+        showOverlay('audioCallUI', true);
+        audioCallStatus.textContent = 'Establishing connection...';
+    } else {
+        showOverlay('audioCallUI', false); // Hide audio UI for video
+    }
+
     peerConnection.onicecandidate = event => {
-        if (event.candidate) {
-            console.log('Generated ICE candidate:', event.candidate);
-            // Send the candidate to the signaling server
-            sendMessage({
-                type: 'candidate',
-                candidate: event.candidate
-            });
-        } else {
-            console.log('All ICE candidates have been gathered.');
-        }
+        if (event.candidate) sendMessage({ type: 'candidate', candidate: event.candidate });
     };
 
-    // Event Listener: Called when a remote track (audio in this case) is received.
     peerConnection.ontrack = event => {
-        console.log('Remote track received:', event.track, 'Stream:', event.streams[0]);
-        // Ensure we have a MediaStream object for the remote audio element
-         if (!remoteStream || remoteAudio.srcObject !== remoteStream) {
+        console.log(`Remote ${event.track.kind} track received`, event.streams[0]);
+        const receivingMsg = `Receiving remote ${event.track.kind}...`;
+        if (currentCallType === 'video') callStatus.textContent = receivingMsg;
+        // No status update needed on audio UI for track itself
+
+        if (!remoteStream) {
             remoteStream = new MediaStream();
-            remoteAudio.srcObject = remoteStream; // Assign the stream to the audio element
-            console.log("Created and set remoteStream for remoteAudio element");
+            // Always assign to remoteVideo, it handles audio too
+            remoteVideo.srcObject = remoteStream;
+            console.log("Created remoteStream, assigned to remoteVideo");
         }
-        // Add the received track to the remote stream, which plays through the audio element
         remoteStream.addTrack(event.track);
+
+        // Refined logic to hide connecting overlay
+        if (currentCallType === 'video' && event.track.kind === 'video') {
+            remoteVideo.onplaying = () => {
+                 console.log("Remote video playing");
+                 showOverlay('remoteConnectingOverlay', false); // Hide connecting spinner
+            }
+        } else if (currentCallType === 'audio' && event.track.kind === 'audio') {
+             // Remote audio track is added to the stream assigned to remoteVideo
+             // We don't need visual feedback here, but update status text
+             console.log("Remote audio track added");
+             showOverlay('remoteConnectingOverlay', false); // Hide spinner
+             audioCallStatus.textContent = 'Audio connected'; // Update status on audio UI
+        }
     };
 
-     // Event Listener: Monitors the overall connection state.
-    peerConnection.onconnectionstatechange = event => {
-        console.log('PeerConnection state changed:', peerConnection.connectionState);
+    peerConnection.onconnectionstatechange = () => {
         const state = peerConnection.connectionState;
-         connectionStatus.textContent = `Status: Peer connection state: ${state}`; // Update UI
+        console.log('PeerConnection state:', state);
+        const stateMsg = `P2P: ${state}`;
+        if (currentCallType === 'video') callStatus.textContent = stateMsg;
+        else audioCallStatus.textContent = stateMsg; // Update audio UI status
+
         if (state === 'connected') {
-            console.log('Peers connected!');
+            showOverlay('remoteConnectingOverlay', false); // Ensure hidden
+             if(currentCallType === 'audio') audioCallStatus.textContent = 'Connected';
         } else if (state === 'failed' || state === 'closed' || state === 'disconnected') {
              console.log(`PeerConnection ${state}.`);
-             // Handle potential disconnections or failures
-             // A 'disconnected' state might recover, but 'failed'/'closed' usually means reset.
-             // Consider resetting the call on 'failed' or 'closed'
-             if (state === 'failed' || state === 'closed') {
-                 // resetCall(); // Decide if automatic reset is desired
+             showOverlay('remoteConnectingOverlay', true); // Show overlay on failure/disconnect
+             remoteConnectingOverlay.querySelector('p').textContent = `Connection ${state}`;
+             if(currentCallType === 'audio') {
+                 showOverlay('audioCallUI', true); // Keep audio UI visible
+                 audioCallStatus.textContent = `Connection ${state}`;
              }
         }
     };
 
-     // Event Listener: Monitors the ICE connection state (more granular network connection status).
-    peerConnection.oniceconnectionstatechange = event => {
-        console.log('ICE connection state change:', peerConnection.iceConnectionState);
-         // Can provide more detailed status like 'checking', 'completed', 'failed'
-         // connectionStatus.textContent = `Status: ICE state: ${peerConnection.iceConnectionState}`;
-    }
-
-    // Add local tracks *if* the local stream is already available when PC is created.
-    // If not, tracks will be added later by startMedia() or handleOffer().
-    if (localStream) {
-        addLocalTracksToPeerConnection();
-    } else {
-        console.log("Local stream not ready when PeerConnection was set up. Tracks will be added later.");
-    }
+    if (localStream) addLocalTracksToPeerConnection();
 }
 
-/**
- * Initiator's Action: Creates the PeerConnection (if needed) and the SDP Offer.
- * Sends the offer to the peer via the signaling server.
- * This is typically called after the initiator receives the 'peer_joined' message.
- */
+// --- Offer/Answer Handling (Mostly status updates) ---
+
 async function createPeerConnectionAndOffer() {
-     // Ensure local media is started before creating offer
-     if (!localStream) {
-        console.warn("Local stream not ready yet. Waiting before creating offer.");
-        // Attempt to start media if not already started/requested
-        await startMedia(); // Ensure media is attempted
-        if (!localStream) {
-            console.error("Failed to get local media. Cannot create offer.");
-            return; // Exit if media failed
-        }
-    }
-
-    // Setup the PeerConnection object
-    if (!peerConnection) {
-        setupPeerConnection();
-    } else {
-        // If PC exists but tracks weren't added (e.g., media was slow), try adding now.
-        addLocalTracksToPeerConnection();
-    }
-
-
-    console.log('Creating offer...');
     try {
-        const offer = await peerConnection.createOffer(); // Create the SDP offer
-        await peerConnection.setLocalDescription(offer); // Set the offer as the local description
-        console.log('Offer created and set as local description:', offer);
+        if (!localStream) await startMedia();
+        if (!localStream) throw new Error("Cannot create offer without local media.");
+        if (!peerConnection) setupPeerConnection();
 
-        // Send the offer to the peer via the signaling server
-        sendMessage({
-            type: 'offer',
-            offer: offer // Include the offer SDP
-        });
+        console.log('Creating offer...');
+        const statusMsg = "Creating offer...";
+        if (currentCallType === 'video') callStatus.textContent = statusMsg;
+        else audioCallStatus.textContent = statusMsg;
+
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        console.log('Offer created and set.');
+        sendMessage({ type: 'offer', offer: offer });
+        const sentMsg = "Offer sent.";
+        if (currentCallType === 'video') callStatus.textContent = sentMsg;
+        else audioCallStatus.textContent = sentMsg;
+
     } catch (e) {
-        console.error('Error creating offer or setting local description:', e);
-        // Handle error (e.g., notify user, reset state)
+        console.error('Error creating offer:', e);
+        const errorMsg = "Error creating offer.";
+        if (currentCallType === 'video') callStatus.textContent = errorMsg;
+        else audioCallStatus.textContent = errorMsg;
     }
 }
 
-/**
- * Joiner's Action: Handles an incoming SDP Offer from the initiator.
- * Sets the remote description, creates an SDP Answer, sets the local description,
- * and sends the answer back to the initiator via the signaling server.
- * @param {RTCSessionDescriptionInit} offerSdp - The offer received from the peer.
- */
 async function handleOffer(offerSdp) {
-     // Ensure local media is started before setting remote description and creating answer
-     if (!localStream) {
-        console.warn("Local stream not ready yet. Starting media before handling offer.");
-        await startMedia();
-        if (!localStream) {
-            console.error("Failed to get local media. Cannot handle offer.");
-            return;
-        }
-    }
+    try {
+        if (!localStream) await startMedia();
+        if (!localStream) throw new Error("Cannot handle offer without local media.");
+        if (!peerConnection) setupPeerConnection();
 
-    // Setup PeerConnection if it doesn't exist (should be called after getting media)
-    if (!peerConnection) {
-         setupPeerConnection();
-    }
+        console.log('Handling offer...');
+        const statusMsg = "Processing offer...";
+        if (currentCallType === 'video') callStatus.textContent = statusMsg;
+        else audioCallStatus.textContent = statusMsg;
 
-
-    console.log('Handling received offer...');
-     try {
-        // Set the received offer as the remote description
         await peerConnection.setRemoteDescription(new RTCSessionDescription(offerSdp));
         console.log('Remote description (offer) set.');
 
-        // Create the SDP answer
         console.log('Creating answer...');
         const answer = await peerConnection.createAnswer();
-        // Set the answer as the local description
         await peerConnection.setLocalDescription(answer);
-        console.log('Answer created and set as local description:', answer);
+        console.log('Answer created and set.');
+        sendMessage({ type: 'answer', answer: answer });
+        const sentMsg = "Answer sent.";
+        if (currentCallType === 'video') callStatus.textContent = sentMsg;
+        else audioCallStatus.textContent = sentMsg;
 
-        // Send the answer back to the initiator via the signaling server
-        sendMessage({
-            type: 'answer',
-            answer: answer // Include the answer SDP
-        });
     } catch (e) {
-        console.error('Error handling offer or creating/setting answer:', e);
-        // Handle error
+        console.error('Error handling offer:', e);
+        const errorMsg = "Error processing offer.";
+         if (currentCallType === 'video') callStatus.textContent = errorMsg;
+         else audioCallStatus.textContent = errorMsg;
     }
 }
 
-/**
- * Initiator's Action: Handles an incoming SDP Answer from the joiner.
- * Sets the remote description based on the received answer.
- * @param {RTCSessionDescriptionInit} answerSdp - The answer received from the peer.
- */
 async function handleAnswer(answerSdp) {
-    if (!peerConnection || !peerConnection.localDescription) {
-        console.error('Cannot handle answer: PeerConnection not ready or offer not sent.');
-        return;
-    }
-    console.log('Handling received answer...');
+    if (!peerConnection || !peerConnection.localDescription) return;
+    console.log('Handling answer...');
+    const statusMsg = "Processing answer...";
+    if (currentCallType === 'video') callStatus.textContent = statusMsg;
+    else audioCallStatus.textContent = statusMsg;
     try {
-        // Set the received answer as the remote description
         await peerConnection.setRemoteDescription(new RTCSessionDescription(answerSdp));
         console.log('Remote description (answer) set.');
-        // At this point, the connection should start establishing if ICE candidates exchange successfully.
+         const finalMsg = "Connecting...";
+         if (currentCallType === 'video') callStatus.textContent = finalMsg;
+         else audioCallStatus.textContent = finalMsg;
     } catch (e) {
-        console.error('Error setting remote description (answer):', e);
-        // Handle error
+        console.error('Error setting remote answer:', e);
+        const errorMsg = "Error processing answer.";
+        if (currentCallType === 'video') callStatus.textContent = errorMsg;
+        else audioCallStatus.textContent = errorMsg;
     }
 }
 
-// --- Call Control Functions ---
+// --- Call Control & Cleanup ---
 
-/**
- * Called when the 'End Call' button is clicked or when leaving the call.
- * Sends a 'hangup' message, cleans up local resources, and resets the UI.
- */
 function hangup() {
     console.log('Hanging up call...');
-    // Notify the peer via the signaling server (if connected)
     if (socket && socket.readyState === WebSocket.OPEN && currentRoom) {
         sendMessage({ type: 'hangup' });
     }
-    resetCall(); // Clean up local state and UI
-    alert('Call ended.');
+    resetCall();
 }
 
-// --- Utility and Cleanup Functions ---
-
-/**
- * Resets the WebRTC connection and media streams, and updates the UI.
- * @param {boolean} [closeSocket=true] - Whether to also close the WebSocket connection.
- */
 function resetCall(closeSocket = true) {
      console.log('Resetting call state...');
+     if (peerConnection) { peerConnection.close(); peerConnection = null; }
+     if (localStream) { localStream.getTracks().forEach(t => t.stop()); localStream = null; localVideo.srcObject = null; }
+     if (remoteStream) { remoteStream.getTracks().forEach(t => t.stop()); remoteStream = null; remoteVideo.srcObject = null; }
 
-     // 1. Close PeerConnection
-     if (peerConnection) {
-        peerConnection.close();
-        peerConnection = null;
-        console.log('PeerConnection closed.');
-    }
+     isInitiator = false;
+     currentCallType = null;
 
-    // 2. Stop Media Tracks and Clear Audio Elements
-    if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
-        localStream = null;
-        localAudio.srcObject = null; // Clear local audio element
-        console.log('Local media stream stopped.');
-    }
-     if (remoteStream) {
-        remoteStream.getTracks().forEach(track => track.stop());
-        remoteStream = null;
-        remoteAudio.srcObject = null; // Clear remote audio element
-        console.log('Remote media stream stopped.');
-    }
+     showScreen('connectScreen'); // Go back to connect screen
+     roomIdInput.disabled = false;
+     roomIdInput.value = '';
+     showOverlay('remoteConnectingOverlay', false); // Hide overlays
+     showOverlay('audioCallUI', false);
 
-    // 3. Reset Flags
-    isInitiator = false;
-    // currentRoom = null; // Keep currentRoom to display status until WS closes?
-
-    // 4. Reset UI
-    callControls.style.display = 'none';   // Hide call controls
-    connectControls.style.display = 'block'; // Show connection controls
-    roomIdInput.value = '';                // Clear room input field
-    currentRoomIdSpan.textContent = '';      // Clear displayed room ID
-    // Update status message, avoid overwriting errors
+     // Reset status/buttons on connect screen
+     const canJoin = (socket && socket.readyState === WebSocket.OPEN && !closeSocket);
      if (!connectionStatus.textContent.includes('Error')) {
-         connectionStatus.textContent = `Status: Call ended${closeSocket ? '. Disconnected.' : '. Ready to join a new room.'}`;
+         connectionStatus.textContent = `Status: ${closeSocket ? 'Disconnected.' : 'Ready to connect.'}`;
      }
+     audioCallButton.disabled = !canJoin;
+     videoCallButton.disabled = !canJoin;
 
 
-     // 5. Close WebSocket (Optional)
      if (closeSocket && socket && socket.readyState === WebSocket.OPEN) {
-         console.log("Closing WebSocket connection.");
-         socket.close();
-     } else if (closeSocket && socket) {
-         // Socket might be closing or closed already
-         socket = null; // Ensure we get a new one next time if fully resetting
+         socket.close(); socket = null; currentRoom = null;
+     } else if (closeSocket) {
+         socket = null; currentRoom = null;
      }
-    // Clear room only after potentially closing socket or if resetting fully
-    if (closeSocket) {
-       currentRoom = null;
-    }
-    // Re-enable join button only if WebSocket is still open or will reconnect
-     joinButton.disabled = !(socket && socket.readyState === WebSocket.OPEN);
+     // If socket stays open (peer_left), currentRoom is kept
 
      console.log('Call state reset complete.');
 }
 
-/**
- * Resets the entire application state, including closing the WebSocket.
- * Useful for handling fatal errors or full cleanup.
- */
-function resetState() {
+function resetState() { // Full reset including socket
     console.log("Performing full application state reset.");
-    resetCall(true); // Ensure WebSocket is closed during a full reset
-    // Update status to reflect disconnected state
+    resetCall(true);
     if (!connectionStatus.textContent.includes('Error')) {
-      connectionStatus.textContent = 'Status: Disconnected. Please refresh or try again.';
+        connectionStatus.textContent = 'Status: Disconnected. Refresh?';
     }
-    joinButton.disabled = true; // Disable join until re-initialized
+    audioCallButton.disabled = true;
+    videoCallButton.disabled = true;
 }
-
 
 // --- Initialization ---
-
-/**
- * Initializes the application when the script loads.
- * Disables the join button initially and starts the WebSocket connection.
- */
 function initialize() {
     console.log('Initializing application...');
-    connectionStatus.textContent = 'Status: Connecting to signaling server...';
-    joinButton.disabled = true; // Disable join until WebSocket connects
-    callControls.style.display = 'none'; // Ensure call controls are hidden initially
-    connectControls.style.display = 'block'; // Ensure connect controls are visible
-    connectWebSocket(); // Start WebSocket connection
+    showScreen('connectScreen');
+    connectionStatus.textContent = 'Status: Connecting to server...';
+    audioCallButton.disabled = true;
+    videoCallButton.disabled = true;
+    connectWebSocket();
 }
 
-// Start the application initialization process when the script is loaded
+// Go!
 initialize();

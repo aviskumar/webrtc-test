@@ -1,177 +1,166 @@
-// File: server.js
-
+// server.js
 const WebSocket = require('ws');
 
-// Create a WebSocket server instance listening on port 8080
-const wss = new WebSocket.Server({ port: 8080 });
-
-// Store active rooms and the clients within them.
-// Format: { "roomId": [clientWebSocket1, clientWebSocket2], ... }
-const rooms = {};
+const wss = new WebSocket.Server({ port: 8080 }); // WebSocket server runs on port 8080
+const rooms = {}; // Store rooms: { roomId: { clients: [ws1, ws2], callType: 'audio'|'video' } }
 
 console.log('Signaling server started on ws://localhost:8080');
 
-// Event listener for new client connections
 wss.on('connection', (ws) => {
     console.log('Client connected');
-    let currentRoom = null; // Variable to track which room this specific client (ws) is in
+    let currentRoomId = null; // Track the room ID this client is in
 
-    // Event listener for messages received from this client
     ws.on('message', (message) => {
         let data;
         try {
-            // Attempt to parse the incoming message as JSON
             data = JSON.parse(message);
             console.log('Received:', data);
         } catch (e) {
             console.error('Failed to parse message or invalid message format:', message);
-            return; // Ignore non-JSON messages or handle appropriately
+            return;
         }
 
-        // Handle different message types from the client
         switch (data.type) {
-            // Client wants to create or join a room
             case 'create_or_join':
                 const roomId = data.roomId;
-                if (!roomId) {
-                    console.error('Room ID is required for create_or_join');
-                    ws.send(JSON.stringify({ type: 'error', message: 'Room ID required' }));
+                const requestedCallType = data.callType; // 'audio' or 'video'
+
+                if (!roomId || !requestedCallType) {
+                    console.error('Room ID and Call Type are required');
+                    ws.send(JSON.stringify({ type: 'error', message: 'Room ID and Call Type required' }));
                     return;
                 }
 
-                currentRoom = roomId; // Assign this client to the requested room
+                currentRoomId = roomId; // Assign room ID to this connection
+                let room = rooms[roomId];
+                let isInitiator = false;
+                let actualCallType;
 
-                // Initialize the room if it doesn't exist
-                if (!rooms[roomId]) {
-                    rooms[roomId] = [];
+                // Find or create room
+                if (!room) {
+                    // First user creates the room and sets the call type
+                    isInitiator = true;
+                    actualCallType = requestedCallType;
+                    rooms[roomId] = {
+                        clients: [ws],
+                        callType: actualCallType
+                    };
+                    room = rooms[roomId];
+                    console.log(`Client created room ${roomId} as initiator. Type: ${actualCallType}`);
+                } else {
+                    // Second user joins
+                    if (room.clients.length >= 2) {
+                        console.log(`Room ${roomId} is full. Rejecting client.`);
+                        ws.send(JSON.stringify({ type: 'room_full', roomId: roomId }));
+                        currentRoomId = null;
+                        return;
+                    }
+                    // Use the call type established by the initiator
+                    actualCallType = room.callType;
+                    room.clients.push(ws);
+                    console.log(`Client joined room ${roomId}. Type: ${actualCallType}. Room size: ${room.clients.length}`);
                 }
 
-                // Basic check: Limit rooms to 2 participants for simplicity
-                if (rooms[roomId].length >= 2) {
-                    console.log(`Room ${roomId} is full. Rejecting client.`);
-                    ws.send(JSON.stringify({ type: 'room_full', roomId: roomId }));
-                    currentRoom = null; // Client failed to join, clear their room association
-                    // Optionally close the connection: ws.close();
-                    return;
-                }
+                 // Store room reference on the WebSocket object for easier cleanup on close
+                ws.roomId = roomId;
 
-                // Add the client's WebSocket connection to the room
-                rooms[roomId].push(ws);
-                console.log(`Client joined room ${roomId}. Room size: ${rooms[roomId].length}`);
-
-                // Determine if this client is the first one (initiator) or the second one
-                const isInitiator = rooms[roomId].length === 1;
-
-                // Send confirmation back to the client
+                // Notify client they joined and the established call type
                 ws.send(JSON.stringify({
                     type: 'joined',
                     roomId: roomId,
-                    isInitiator: isInitiator // Let the client know if they should initiate the call
+                    isInitiator: isInitiator,
+                    callType: actualCallType // Send the actual call type
                 }));
 
-                // If the room now has 2 clients, notify the *first* client (initiator)
-                // that the second client (peer) has joined.
-                if (rooms[roomId].length === 2) {
-                    const initiator = rooms[roomId][0];
-                    // Check if initiator is still connected before sending
+                // If two clients are now in the room, notify the first one (initiator)
+                if (!isInitiator && room.clients.length === 2) {
+                    const initiator = room.clients[0];
                     if (initiator && initiator.readyState === WebSocket.OPEN) {
-                       initiator.send(JSON.stringify({ type: 'peer_joined', roomId: roomId }));
-                       console.log(`Notified initiator in room ${roomId} that peer joined.`);
+                       initiator.send(JSON.stringify({
+                           type: 'peer_joined',
+                           roomId: roomId,
+                           callType: actualCallType // Also send call type here
+                        }));
+                       console.log(`Notified initiator in room ${roomId} that peer joined. Type: ${actualCallType}`);
                     } else {
-                        console.warn(`Initiator in room ${roomId} is not connected or ready.`);
-                        // Potential cleanup: Remove the stale initiator connection?
+                        console.warn(`Initiator in room ${roomId} is not connected.`);
                     }
                 }
                 break;
 
-            // Relay WebRTC signaling messages (offer, answer, candidate)
+            // Relay messages (offer, answer, candidate) - NO CHANGE NEEDED HERE
             case 'offer':
             case 'answer':
             case 'candidate':
-                if (!currentRoom || !rooms[currentRoom]) {
-                     console.error(`Cannot relay message: Client not in a valid room (${currentRoom}).`);
+                const targetRoom = rooms[currentRoomId];
+                if (!targetRoom) {
+                     console.error(`Cannot relay message: Client not in a valid room (${currentRoomId}).`);
                      ws.send(JSON.stringify({ type: 'error', message: 'Not connected to a room.' }));
                      return;
                 }
-
-                // Find the *other* client in the same room
-                const otherClient = rooms[currentRoom].find(client => client !== ws);
-
-                // If the other client exists and is connected, forward the message
+                // Find the other client in the room
+                const otherClient = targetRoom.clients.find(client => client !== ws);
                 if (otherClient && otherClient.readyState === WebSocket.OPEN) {
-                    console.log(`Relaying ${data.type} from a client to the other client in room ${currentRoom}`);
-                    // Forward the original message string directly
-                    otherClient.send(message.toString());
+                    console.log(`Relaying ${data.type} in room ${currentRoomId}`);
+                    otherClient.send(message.toString()); // Forward the raw message
                 } else {
-                     console.log(`Cannot relay ${data.type}: Other client not found or not connected in room ${currentRoom}.`);
-                     // Optionally notify the sender if the peer isn't available (except for candidates maybe)
+                     console.log(`Cannot relay ${data.type}: Other client not found or not connected in room ${currentRoomId}.`);
                      if (data.type !== 'candidate') {
                         ws.send(JSON.stringify({ type: 'peer_unavailable', message: 'The other peer is not connected.' }));
                      }
                 }
                 break;
 
-            // Client explicitly hangs up
+            // Hangup - NO CHANGE NEEDED IN CORE LOGIC, cleanup uses ws.roomId
             case 'hangup':
-                 if (!currentRoom || !rooms[currentRoom]) {
-                     console.warn(`Cannot process hangup: Client not in a valid room (${currentRoom}).`);
+                 const roomToHangup = rooms[currentRoomId];
+                 if (!roomToHangup) {
+                     console.warn(`Cannot process hangup: Client not in a valid room (${currentRoomId}).`);
                      return;
                  }
-                 // Notify the other peer in the room, if they exist and are connected
-                 const peerToNotify = rooms[currentRoom].find(client => client !== ws);
+                 const peerToNotify = roomToHangup.clients.find(client => client !== ws);
                  if (peerToNotify && peerToNotify.readyState === WebSocket.OPEN) {
-                      console.log(`Relaying hangup in room ${currentRoom}`);
+                      console.log(`Relaying hangup in room ${currentRoomId}`);
                       peerToNotify.send(JSON.stringify({ type: 'peer_hangup' }));
                  }
-                 // Clean up this client's association with the room
-                 rooms[currentRoom] = rooms[currentRoom].filter(client => client !== ws);
-                 // If room becomes empty, delete it
-                 if (rooms[currentRoom].length === 0) {
-                      console.log(`Room ${currentRoom} is now empty. Deleting room.`);
-                      delete rooms[currentRoom];
-                 }
-                 currentRoom = null; // Client is no longer in a room
+                 // Cleanup handled in 'close' event now
                  break;
 
             default:
-                console.warn('Unknown message type received:', data.type);
-                // Optionally send an error back to the client
-                // ws.send(JSON.stringify({ type: 'error', message: `Unknown message type: ${data.type}` }));
+                console.warn('Unknown message type:', data.type);
         }
     });
 
-    // Event listener for when a client disconnects
     ws.on('close', () => {
         console.log('Client disconnected');
-        // If the client was in a room, perform cleanup
-        if (currentRoom && rooms[currentRoom]) {
-            console.log(`Removing client from room ${currentRoom}`);
+        const closedRoomId = ws.roomId; // Get room ID stored on the WS object
+        if (closedRoomId && rooms[closedRoomId]) {
+            console.log(`Removing client from room ${closedRoomId}`);
+            const room = rooms[closedRoomId];
 
-            // Find if there's another client remaining in the room
-            const remainingClient = rooms[currentRoom].find(client => client !== ws);
+            // Remove the client from the room array
+            room.clients = room.clients.filter(client => client !== ws);
 
-            // Notify the remaining client, if they exist and are connected
-            if (remainingClient && remainingClient.readyState === WebSocket.OPEN) {
-                 remainingClient.send(JSON.stringify({ type: 'peer_left' }));
-                 console.log(`Notified peer in room ${currentRoom} that the other client left.`);
+             // Notify the remaining client if they exist and are connected
+            if (room.clients.length === 1) {
+                 const remainingClient = room.clients[0];
+                 if (remainingClient && remainingClient.readyState === WebSocket.OPEN) {
+                      remainingClient.send(JSON.stringify({ type: 'peer_left' }));
+                      console.log(`Notified peer in room ${closedRoomId} that the other client left.`);
+                 }
             }
 
-            // Remove the disconnected client from the room array
-            rooms[currentRoom] = rooms[currentRoom].filter(client => client !== ws);
-
-            // If the room is now empty after removal, delete the room entirely
-            if (rooms[currentRoom].length === 0) {
-                console.log(`Room ${currentRoom} is now empty. Deleting room.`);
-                delete rooms[currentRoom];
+            // If the room is now empty, delete it
+            if (room.clients.length === 0) {
+                console.log(`Room ${closedRoomId} is now empty. Deleting room.`);
+                delete rooms[closedRoomId];
             }
         }
-        currentRoom = null; // Ensure room tracking is cleared for the closed connection
+        // No need to clear currentRoomId here as it's local to the connection handler
     });
 
-    // Event listener for WebSocket errors
     ws.on('error', (error) => {
         console.error('WebSocket error:', error);
-        // Error handling might involve cleanup similar to the 'close' event,
-        // as 'close' usually follows 'error'.
+        // Cleanup handled in 'close' event, which usually follows 'error'
     });
 });
